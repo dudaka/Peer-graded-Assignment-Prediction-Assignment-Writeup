@@ -1,0 +1,162 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Dung Ho"
+date: "7/8/2018"
+output: 
+  html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(glmnet)
+library(ranger)
+library(VIM)
+library(randomForest)
+
+set.seed(2018 - 7 - 8)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here]( http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har] (see the section on the Weight Lifting Exercise Dataset).
+
+- The [training data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+- The [test data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+## Load Datasets
+
+Loading datasets from files
+
+```{r}
+# Training data
+training <- read.csv("pml-training.csv", na.strings=c('#DIV/0!', '', 'NA'))
+
+# Testing data
+testing  <- read.csv("pml-testing.csv", na.strings=c('#DIV/0!', '', 'NA'))
+```
+
+Size of the training data
+
+```{r}
+dim(training)
+```
+
+## Pre-processing
+
+```{r}
+aggr(training)
+```
+
+As shown in this plot, the training dataset contains a lot of missing data, arround `61%`.
+
+```{r}
+sum(is.na(training))/(dim(training)[1]*dim(training)[2]) 
+```
+
+Some variables almost has no value.
+
+```{r}
+# Missing Values fraction by column / variable
+missCol <- apply(training, 2, function(x) sum(is.na(x)/length(x)))  
+
+# Distribution of Missing Variables
+hist(missCol, main = "Missing Data by Variable")
+
+```
+
+There are 100 variables which have the missing values more than `90%`
+
+
+```{r}
+# table(missCol)
+missIndCol <- which(missCol > 0.9)
+length(missIndCol)  #Number of predictors > 90% missing
+```
+
+Remove these missing-value variables from the training set and the test set. Moreover, I also remove some useless variables like count varibale (`X`), raw time stamps (`raw_time_stamp_part1`, `raw_time_stamp_part2`). Our new datasets have 57 variables only.
+
+```{r}
+# Remove Missing Variables from training and test sets
+new.training <- training[,-missIndCol]
+new.testing  <- testing[, -missIndCol]
+
+# Remove X = row count variable, and raw time stamps
+new.training  <- new.training[,-c(1,3,4)]
+new.testing   <- new.testing[,-c(1,3,4)]
+
+dim(new.training)
+```
+
+
+```{r}
+aggr(new.training)
+```
+
+## Data Analysis
+
+To measure the importance between predictors to predict `classe` variable, I use Random Forest to fit a model with number of tree is 100 and all predictors are used.
+
+```{r}
+modfit <- randomForest(classe ~ ., data = new.training,
+                       importance=TRUE, ntree=100, na.action = na.pass)
+modfit
+```
+
+This model is very good since the out-of-bag estimate of error is only `0.14%`. However, to generalize this model, we need to do some Cross Validation. Unfortunatly, the number of predictors is too many (56 pedictors) and the training set is very but with 19622 instances, the cross validation process will take alot of computation resources, especically, time consuming.
+
+It is better to use a subset of predictors in which the predictors are more important than the others. The following plot show the predictor ranking.
+
+```{r}
+varImpPlot(modfit)
+```
+
+So, the strategy for feature selection is to get red of the predictors which have smallest MeanDecreaseAcuratcy. In this case, we will take top 30 predictors to our learning process. They are
+
+```{r}
+imp.table <- data.frame(modfit$importance)
+ord <- order(imp.table$MeanDecreaseAccuracy, decreasing = TRUE)
+predictors <- names(new.training)[ord][1:30]
+predictors
+```
+
+
+
+## Training and Cross Validation
+
+```{r}
+
+rf.formula <- as.formula(paste("classe", 
+                               paste(predictors, collapse="+"), 
+                               sep = " ~ "))
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+metric <- "Accuracy"
+mtry <- 20
+tunegrid <- expand.grid(.mtry=mtry)
+
+start.time <- Sys.time()
+rfmodel <- train(rf.formula, data=new.training, method="rf",
+                 metric=metric, tuneGrid=tunegrid, trControl=control)
+
+duration <- Sys.time() - start.time
+
+rfmodel
+```
+
+The model's accuracy is very high, arround `r round(rfmodel$results[2] * 100, 2)`% and it take `r round(duration)` mins (in my personal laptop) to finish the training process including the 10-fold cross validation in 3 times.
+
+## Prediction
+
+```{r}
+predict(rfmodel, newdata = new.testing)
+```
+
+
